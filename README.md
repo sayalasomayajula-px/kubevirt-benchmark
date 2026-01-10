@@ -1955,8 +1955,7 @@ kubevirt-benchmark-suite/
 │
 └── examples/                          # Example configurations
     ├── benchmarks/                   # Benchmark templates
-    │   ├── fio-benchmark-vm.yaml     # FIO storage benchmark VM (Fedora)
-    │   └── fio-benchmark-vm-rhel9.yaml # FIO storage benchmark VM (RHEL9)
+    │   └── fio-benchmark-vm.yaml     # FIO storage benchmark VM (Fedora)
     ├── scripts/                      # Example shell scripts
     │   ├── sequential-migration.sh   # Sequential migration example
     │   ├── parallel-migration.sh     # Parallel migration example
