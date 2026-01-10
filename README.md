@@ -169,7 +169,7 @@ The SSH pod is required for ping tests that validate VM network connectivity. **
 
 ```bash
 # 5.1 Create the SSH test pod
-kubectl apply -f examples/ssh-pod.yaml
+kubectl apply -f examples/utilities/ssh-pod.yaml
 
 # 5.2 Wait for the pod to be ready
 kubectl wait --for=condition=Ready pod/ssh-test-pod -n default --timeout=300s
@@ -335,7 +335,7 @@ grep "storageClassName:" examples/vm-templates/*.yaml
 
 ```bash
 # 6.1 Create the SSH test pod
-kubectl apply -f examples/ssh-pod.yaml
+kubectl apply -f examples/utilities/ssh-pod.yaml
 
 # 6.2 Wait for the pod to be ready
 kubectl wait --for=condition=Ready pod/ssh-test-pod -n default --timeout=300s
@@ -1954,14 +1954,18 @@ kubevirt-benchmark-suite/
 │   └── replace-storage-class.sh      # Storage class replacement script
 │
 └── examples/                          # Example configurations
-    ├── storage-classes/              # Sample StorageClass definitions (vendor-specific)
-    ├── vm-templates/                 # VM template files
-    │   └── vm-template.yaml          # Templated VM configuration
-    ├── ssh-pod.yaml                  # SSH test pod for network tests
-    ├── sequential-migration.sh       # Sequential migration example
-    ├── parallel-migration.sh         # Parallel migration example
-    ├── evacuation-scenario.sh        # Node evacuation example
-    └── round-robin-migration.sh      # Round-robin migration example
+    ├── benchmarks/                   # Benchmark templates
+    │   ├── fio-benchmark-vm.yaml     # FIO storage benchmark VM (Fedora)
+    │   └── fio-benchmark-vm-rhel9.yaml # FIO storage benchmark VM (RHEL9)
+    ├── scripts/                      # Example shell scripts
+    │   ├── sequential-migration.sh   # Sequential migration example
+    │   ├── parallel-migration.sh     # Parallel migration example
+    │   ├── evacuation-scenario.sh    # Node evacuation example
+    │   └── round-robin-migration.sh  # Round-robin migration example
+    ├── utilities/                    # Utility manifests
+    │   └── ssh-pod.yaml              # SSH test pod for network tests
+    └── vm-templates/                 # VM template files
+        └── vm-template.yaml          # Templated VM configuration
 ```
 
 ---
@@ -2003,7 +2007,7 @@ kubevirt-benchmark-suite/
 
 8. **Network Testing**: Deploy an SSH pod in advance for ping tests
    ```bash
-   kubectl apply -f examples/ssh-pod.yaml
+   kubectl apply -f examples/utilities/ssh-pod.yaml
    kubectl wait --for=condition=Ready pod/ssh-test-pod -n default --timeout=300s
    ```
 
