@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ssh-test-pod
+  namespace: default
+  labels:
+    app: kubevirt-perf-test
+spec:
+  containers:
+  - name: ssh-client
+    image: alpine:latest
+    command:
+      - /bin/sh
+      - -c
+      - |
+        apk add --no-cache bash iputils openssh-client netcat-openbsd
+        tail -f /dev/null
+    resources:
+      requests:
+        memory: "128Mi"
+        cpu: "100m"
+      limits:
+        memory: "256Mi"
+        cpu: "200m"
+  restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ssh-test-pod
+  namespace: default
+spec:
+  selector:
+    app: kubevirt-perf-test
+  ports:
+  - protocol: TCP
+    port: 22
+    targetPort: 22
+

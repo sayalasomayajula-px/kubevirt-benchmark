@@ -1,0 +1,199 @@
+# FIO Benchmark VM Template for KubeVirt
+#
+# This template creates a VM with FIO benchmarking capabilities.
+# FIO runs inside the VM and writes results to /var/log/fio/fio.log
+#
+# To view results:
+#   virtctl ssh cloud-user@fio-benchmark-vm
+#   cat /var/log/fio/fio.log
+#
+# Template Variables (replace before applying):
+#   {{STORAGE_CLASS_NAME}}   - Storage class name for VM root disk and scratch disk
+#
+# Usage:
+#   sed -i '' 's/{{STORAGE_CLASS_NAME}}/YOUR-STORAGE-CLASS/g' fio-benchmark-vm.yaml
+#   kubectl apply -f fio-benchmark-vm.yaml -n <namespace>
+#
+# FIO Config Changes: To Run fio with custom parameters make sure we add the values in fio.job in fio-benchmark-vm-fio-job-config configmap
+---
+# ConfigMap: FIO Job Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fio-benchmark-vm-fio-job-config
+data:
+  fio.job: |
+    [global]
+    name=fio-benchmark
+    directory=/scratch/
+    rw=randwrite
+    bs=4k
+    direct=1
+    ioengine=libaio
+    iodepth=64
+    numjobs=4
+    group_reporting=1
+    time_based=1
+    runtime=300
+    size=10G
+
+    [randwrite-test]
+
+---
+# VirtualMachine with FIO Benchmark
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: fio-benchmark-vm
+  labels:
+    app: fio-benchmark
+    kubevirt.io/vm: fio-benchmark-vm
+spec:
+  dataVolumeTemplates:
+    # Root disk from DataSource
+    - metadata:
+        name: fio-benchmark-vm-rootdisk
+      spec:
+        sourceRef:
+          kind: DataSource
+          name: fedora
+          namespace: openshift-virtualization-os-images
+        storage:
+          resources:
+            requests:
+              storage: 30Gi
+          storageClassName: {{STORAGE_CLASS_NAME}}
+          volumeMode: Block
+    # Scratch disk for FIO tests
+    - metadata:
+        name: fio-benchmark-vm-scratch
+      spec:
+        source:
+          blank: {}
+        storage:
+          resources:
+            requests:
+              storage: 200Gi
+          storageClassName: {{STORAGE_CLASS_NAME}}
+          volumeMode: Block
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        app: fio-benchmark
+        kubevirt.io/vm: fio-benchmark-vm
+    spec:
+      domain:
+        cpu:
+          cores: 2
+        devices:
+          disks:
+            # Root disk
+            - name: rootdisk
+              bootOrder: 1
+              disk:
+                bus: virtio
+            # Scratch disk for FIO
+            - name: scratchdisk
+              disk:
+                bus: virtio
+            # Cloud-init disk
+            - name: cloudinitdisk
+              disk:
+                bus: virtio
+            # FIO config ConfigMap disk
+            - name: fio-config-disk
+              disk:
+                bus: virtio
+              serial: FIOCONFIG
+          interfaces:
+            - name: default
+              masquerade: {}
+        features:
+          acpi: {}
+          smm:
+            enabled: true
+        resources:
+          requests:
+            cpu: "2"
+            memory: 4Gi
+      networks:
+        - name: default
+          pod: {}
+      tolerations:
+        - key: node-role.kubernetes.io/master
+          operator: Exists
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      volumes:
+        # Root disk volume
+        - name: rootdisk
+          dataVolume:
+            name: fio-benchmark-vm-rootdisk
+        # Scratch disk volume for FIO
+        - name: scratchdisk
+          dataVolume:
+            name: fio-benchmark-vm-scratch
+        # Cloud-init configuration
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            userData: |
+              #cloud-config
+              user: cloud-user
+              password: changeme
+              chpasswd:
+                expire: false
+              ssh_pwauth: true
+              disable_root: false
+              packages:
+                - qemu-guest-agent
+                - fio
+                - xfsprogs
+              write_files:
+                - path: /usr/local/bin/start-fio-benchmark.sh
+                  permissions: '0755'
+                  content: |
+                    #!/bin/bash
+                    set -e
+
+                    # Wait for disks to be available
+                    echo "Waiting for disks..."
+                    sleep 10
+
+                    # Find the 200G scratch disk (vdb)
+                    SCRATCH_DISK=$(lsblk -dnbo NAME,SIZE | awk '$2 > 100000000000 {print $1}' | head -1)
+                    if [ -n "$SCRATCH_DISK" ] && ! mountpoint -q /scratch; then
+                      echo "Formatting scratch disk /dev/$SCRATCH_DISK..."
+                      mkfs.xfs -f /dev/$SCRATCH_DISK
+                      mkdir -p /scratch
+                      mount /dev/$SCRATCH_DISK /scratch
+                    fi
+
+                    # Create log directory
+                    mkdir -p /var/log/fio
+
+                    # Mount FIO config disk (by serial number)
+                    mkdir -p /mnt/fio-config
+                    FIO_DISK=$(lsblk --nodeps -no NAME,SERIAL | grep FIOCONFIG | awk '{print $1}')
+                    if [ -n "$FIO_DISK" ] && ! mountpoint -q /mnt/fio-config; then
+                      mount /dev/$FIO_DISK /mnt/fio-config 2>/dev/null || true
+                    fi
+
+                    # Run FIO if config exists
+                    if [ -f /mnt/fio-config/fio.job ]; then
+                      echo "Starting FIO benchmark..."
+                      fio /mnt/fio-config/fio.job \
+                        --status-interval=60 \
+                        --output=/var/log/fio/fio.log &
+                    else
+                      echo "FIO config not found!"
+                    fi
+              runcmd:
+                - systemctl enable --now qemu-guest-agent || true
+                - /usr/local/bin/start-fio-benchmark.sh
+        # FIO job configuration ConfigMap
+        - name: fio-config-disk
+          configMap:
+            name: fio-benchmark-vm-fio-job-config
