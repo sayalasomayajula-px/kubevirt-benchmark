@@ -15,7 +15,7 @@ A comprehensive, vendor-neutral performance testing toolkit for KubeVirt virtual
   - [Scenario 2: Single Node Boot Storm Testing](#scenario-2-single-node-boot-storm-testing)
   - [Scenario 3: Multi-Node Boot Storm Testing](#scenario-3-multi-node-boot-storm-testing)
   - [Scenario 4: Live Migration Testing](#scenario-4-live-migration-testing)
-  - [Scenario 5: Capacity Benchmark Testing](#scenario-5-capacity-benchmark-testing)
+  - [Scenario 5: Chaos Benchmark Testing](#scenario-5-chaos-benchmark-testing)
   - [Scenario 6: Failure and Recovery Testing](#scenario-6-failure-and-recovery-testing)
 - [Boot Storm Testing Guide](#boot-storm-testing-guide)
 - [VM Template Guide](#vm-template-guide)
@@ -41,7 +41,7 @@ This suite provides automated performance testing tools to measure and validate 
 - **VM Creation Performance Testing**: Measure VM provisioning and boot times at scale
 - **Boot Storm Testing**: Test VM startup performance when powering on multiple VMs simultaneously
 - **Live Migration Testing**: Measure VM live migration performance across different scenarios
-- **Capacity Benchmark Testing**: Test cluster capacity limits with comprehensive VM operations (create, resize, restart, snapshot, migrate)
+- **Chaos Benchmark Testing**: Run concurrent chaos operations (VM creation, volume resize, volume clone, VM restart, snapshots) with mandatory concurrency
 - **Single Node Testing**: Pin all VMs to a single node for node-level capacity testing
 - **Failure and Recovery Testing**: Validate VM recovery times after node failures
 - **VM Snapshot Testing**: Test VM snapshot creation and readiness
@@ -239,8 +239,8 @@ virtbench datasource-clone --start 1 --end 10 --storage-class YOUR-STORAGE-CLASS
 # Migration test
 virtbench migration --start 1 --end 5 --source-node WORKER-NODE-NAME --save-results
 
-# Capacity benchmark
-virtbench capacity-benchmark --storage-class YOUR-STORAGE-CLASS --vms 5 --max-iterations 3 --save-results
+# Chaos benchmark (concurrent operations with mandatory --concurrency)
+virtbench chaos-benchmark --storage-class YOUR-STORAGE-CLASS --concurrency 2 --vms 5 --save-results
 
 # Failure recovery test
 virtbench failure-recovery --start 1 --end 10 --node-name WORKER-NODE-NAME
@@ -395,9 +395,9 @@ python3 measure-vm-creation-time.py --start 1 --end 10 --vm-name rhel-9-vm --sav
 cd migration
 python3 measure-vm-migration-time.py --start 1 --end 5 --source-node WORKER-NODE-NAME --save-results
 
-# Capacity benchmark
-cd capacity-benchmark
-python3 measure-capacity.py --storage-class YOUR-STORAGE-CLASS --vms 5 --max-iterations 3 --save-results
+# Chaos benchmark
+cd chaos-benchmark
+python3 measure-chaos.py --storage-class YOUR-STORAGE-CLASS --concurrency 2 --vms 5 --save-results
 
 # Failure recovery test
 cd failure-recovery
@@ -828,119 +828,70 @@ python3 measure-vm-migration-time.py --start 1 --end 100 --create-vms --cleanup
 
 ---
 
-### Scenario 5: Capacity Benchmark Testing
+### Scenario 5: Chaos Benchmark Testing
 
-Tests cluster capacity limits by running comprehensive VM operations in a loop until failure.
+Tests cluster resilience by running concurrent chaos operations including VM creation, volume resize, volume clone, VM restart, and snapshots.
 
-**Use Case**: Discover maximum VM capacity, test volume expansion limits, validate snapshot functionality, and stress-test the cluster.
+**Use Case**: Stress-test the cluster with concurrent operations, validate volume cloning, and measure performance under load.
 
-#### Basic Capacity Test
+**Key Features**:
+- **Mandatory concurrency** (`--concurrency` is required)
+- **Volume cloning** (new phase added)
+- **Proper scheduling timeout** (tracks both Scheduling AND Provisioning states)
+- **Accurate phase tracking** (only shows phases that actually executed)
+
+#### Basic Chaos Test
 
 **virtbench CLI:**
 ```bash
-# Run capacity test with default settings (5 VMs per iteration)
-virtbench capacity-benchmark --storage-class YOUR-STORAGE-CLASS
+# Run chaos test with mandatory concurrency
+virtbench chaos-benchmark --storage-class YOUR-STORAGE-CLASS --concurrency 2
 
 # Run with custom VM count
-virtbench capacity-benchmark --storage-class YOUR-STORAGE-CLASS --vms 10
+virtbench chaos-benchmark --storage-class YOUR-STORAGE-CLASS --concurrency 5 --vms 10
 
 # Run with maximum iterations limit
-virtbench capacity-benchmark --storage-class YOUR-STORAGE-CLASS --max-iterations 5
+virtbench chaos-benchmark --storage-class YOUR-STORAGE-CLASS --concurrency 2 --max-iterations 5
 ```
 
 **Python script:**
 ```bash
-cd capacity-benchmark
+cd chaos-benchmark
 
-# Run capacity test with default settings (5 VMs per iteration)
-python3 measure-capacity.py --storage-class YOUR-STORAGE-CLASS
+# Run chaos test with mandatory concurrency
+python3 measure-chaos.py --storage-class YOUR-STORAGE-CLASS --concurrency 2
 
 # Run with custom VM count
-python3 measure-capacity.py --storage-class YOUR-STORAGE-CLASS --vms 10
-
-# Run with maximum iterations limit
-python3 measure-capacity.py --storage-class YOUR-STORAGE-CLASS --max-iterations 5
+python3 measure-chaos.py --storage-class YOUR-STORAGE-CLASS --concurrency 5 --vms 10
 ```
 
 #### Skip Specific Phases
 
 **virtbench CLI:**
 ```bash
-# Test only VM creation capacity (skip resize, restart, snapshot, migration)
-virtbench capacity-benchmark \
+# Skip volume clone phase
+virtbench chaos-benchmark \
   --storage-class YOUR-STORAGE-CLASS \
-  --vms 10 \
-  --skip-resize-job \
-  --skip-restart-job \
-  --skip-snapshot-job
+  --concurrency 2 \
+  --skip-clone-job
 
-# Test volume expansion limits
-virtbench capacity-benchmark \
+# Skip multiple phases
+virtbench chaos-benchmark \
   --storage-class YOUR-STORAGE-CLASS \
-  --vms 5 \
-  --min-vol-size 30Gi \
-  --min-vol-inc-size 20Gi \
-  --max-iterations 10
+  --concurrency 2 \
+  --skip-resize-job \
+  --skip-clone-job \
+  --skip-snapshot-job
 ```
 
-**Python script:**
-```bash
-cd capacity-benchmark
-
-# Test only VM creation capacity (skip resize, restart, snapshot)
-python3 measure-capacity.py \
-  --storage-class YOUR-STORAGE-CLASS \
-  --vms 10 \
-  --skip-resize-job \
-  --skip-restart-job \
-  --skip-snapshot-job
-
-# Test volume expansion limits
-python3 measure-capacity.py \
-  --storage-class YOUR-STORAGE-CLASS \
-  --vms 5 \
-  --min-vol-size 30Gi \
-  --min-vol-inc-size 20Gi \
-  --max-iterations 10
-```
-
-**What it does**:
-1. **Phase 1**: Creates VMs with multiple data volumes
-2. **Phase 2**: Resizes root and data volumes (tests volume expansion)
-3. **Phase 3**: Restarts VMs (tests VM lifecycle)
-4. **Phase 4**: Creates VM snapshots (tests snapshot functionality)
-5. Repeats until failure or max iterations reached
-
-#### Save Results to Files
+#### Save Results
 
 **virtbench CLI:**
 ```bash
-# Run capacity test and save results
-virtbench capacity-benchmark \
+# Run chaos test and save results
+virtbench chaos-benchmark \
   --storage-class YOUR-STORAGE-CLASS \
-  --vms 5 \
-  --save-results
-
-# Save results with storage version for dashboard organization
-virtbench capacity-benchmark \
-  --storage-class YOUR-STORAGE-CLASS \
-  --vms 5 \
-  --save-results \
-  --storage-version 3.2.0
-
-# Results will be saved to: results/{storage-version}/{num-disks}-disk/{timestamp}_capacity_benchmark_{total_vms}vms/
-# Example: results/3.2.0/10-disk/20251207-083451_capacity_benchmark_22vms/
-# Files created:
-#   - capacity_benchmark_results.json (detailed results)
-#   - summary_capacity_benchmark.json (summary for dashboard)
-#   - capacity_benchmark_results.csv (key metrics)
-```
-
-**Python script:**
-```bash
-cd capacity-benchmark
-python3 measure-capacity.py \
-  --storage-class YOUR-STORAGE-CLASS \
+  --concurrency 2 \
   --vms 5 \
   --save-results \
   --storage-version 3.2.0
@@ -951,13 +902,13 @@ python3 measure-capacity.py \
 **virtbench CLI:**
 ```bash
 # Cleanup resources after test
-virtbench capacity-benchmark --cleanup-only
+virtbench chaos-benchmark --cleanup-only --concurrency 1
 ```
 
 **Python script:**
 ```bash
-cd capacity-benchmark
-python3 measure-capacity.py --cleanup-only
+cd chaos-benchmark
+python3 measure-chaos.py --cleanup-only --concurrency 1
 ```
 
 ---
@@ -1488,19 +1439,20 @@ kubectl get storageclass
 | `--log-file` | Output log file path | stdout |
 | `--log-level` | Logging level | INFO |
 
-### Capacity Benchmark Tests
+### Chaos Benchmark Tests
 
 #### Required Options
 
 | Option | Description |
 |--------|-------------|
 | `--storage-class` | Storage class name (comma-separated for multiple) |
+| `--concurrency` | Number of concurrent operations (**REQUIRED**) |
 
 #### Test Configuration
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--namespace` | `virt-capacity-benchmark` | Namespace for test resources |
+| `--namespace` | `virt-chaos-benchmark` | Namespace for test resources |
 | `--max-iterations` | `0` (unlimited) | Maximum number of iterations |
 | `--vms` | `5` | Number of VMs per iteration |
 | `--data-volume-count` | `9` | Number of data volumes per VM |
@@ -1523,6 +1475,7 @@ kubectl get storageclass
 | Option | Description |
 |--------|-------------|
 | `--skip-resize-job` | Skip volume resize phase |
+| `--skip-clone-job` | Skip volume clone phase |
 | `--skip-snapshot-job` | Skip snapshot phase |
 | `--skip-restart-job` | Skip restart phase |
 
@@ -1530,9 +1483,10 @@ kubectl get storageclass
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--concurrency` | `10` | Number of concurrent operations |
 | `--poll-interval` | `5` | Polling interval in seconds |
-| `--scheduling-timeout` | `120` | Seconds to wait in Scheduling state before declaring capacity reached |
+| `--scheduling-timeout` | `120` | Seconds to wait in Scheduling/Provisioning state before failing |
+| `--vm-timeout` | `1800` | Total timeout for VM to reach Running state |
+| `--max-create-retries` | `5` | Maximum retries for VM creation |
 
 #### Cleanup Options
 
@@ -1548,18 +1502,6 @@ kubectl get storageclass
 | `--save-results` | `false` | Save results to JSON/CSV files |
 | `--results-dir` | `results` | Directory to save results |
 | `--storage-version` | `default` | Storage version for folder hierarchy (e.g., 3.2.0) |
-
-Results are saved in the standard folder structure:
-```
-results/{storage-version}/{num-disks}-disk/{timestamp}_capacity_benchmark_{total_vms}vms/
-```
-
-#### Logging Options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--log-file` | Auto-generated | Log file path |
-| `--log-level` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 
 ## Output and Results
 
@@ -1632,7 +1574,7 @@ Detailed logs are saved to the specified log file with:
 - Verify registry image stream exists: `kubectl get imagestream -n openshift-virtualization-os-images`
 - Check CDI operator logs: `kubectl logs -n openshift-cnv -l name=cdi-operator`
 
-### Capacity Benchmark Issues
+### Chaos Benchmark Issues
 
 **Issue**: Volume resize fails
 - Check if your storage class supports volume expansion:
@@ -1640,6 +1582,13 @@ Detailed logs are saved to the specified log file with:
   kubectl get storageclass YOUR-STORAGE-CLASS -o jsonpath='{.allowVolumeExpansion}'
   ```
 - If `false`, use `--skip-resize-job` to skip this phase
+
+**Issue**: Volume clone fails
+- Check if your storage class supports cloning:
+  ```bash
+  kubectl get storageclass YOUR-STORAGE-CLASS -o yaml | grep -i clone
+  ```
+- If not supported, use `--skip-clone-job` to skip this phase
 
 **Issue**: Snapshot creation fails
 - Check if VolumeSnapshotClass is configured:
@@ -1837,18 +1786,18 @@ python3 measure-recovery-time.py \
   --failed-node worker-1
 ```
 
-#### Clean up after Capacity Benchmark Tests
+#### Clean up after Chaos Benchmark Tests
 
 **virtbench CLI:**
 ```bash
 # Cleanup resources after test
-virtbench capacity-benchmark --cleanup-only
+virtbench chaos-benchmark --cleanup-only --concurrency 1
 ```
 
 **Python script:**
 ```bash
-cd capacity-benchmark
-python3 measure-capacity.py --cleanup-only
+cd chaos-benchmark
+python3 measure-chaos.py --cleanup-only --concurrency 1
 ```
 
 ### Manual Cleanup
@@ -1922,7 +1871,7 @@ kubevirt-benchmark-suite/
 │   ├── commands/                     # Subcommand implementations
 │   │   ├── datasource_clone.py       # DataSource clone subcommand
 │   │   ├── migration.py              # Migration subcommand
-│   │   ├── capacity.py               # Capacity benchmark subcommand
+│   │   ├── chaos.py                  # Chaos benchmark subcommand
 │   │   ├── failure_recovery.py       # Failure recovery subcommand
 │   │   ├── validate.py               # Cluster validation subcommand
 │   │   └── version.py                # Version subcommand
@@ -1938,8 +1887,8 @@ kubevirt-benchmark-suite/
 ├── migration/                         # Live migration performance tests
 │   └── measure-vm-migration-time.py  # Main migration test script
 │
-├── capacity-benchmark/                # Capacity benchmark tests
-│   └── measure-capacity.py           # Main capacity test script
+├── chaos-benchmark/                   # Chaos benchmark tests (concurrent operations)
+│   └── measure-chaos.py              # Main chaos test script
 │
 ├── failure-recovery/                  # Failure and recovery tests
 │   ├── measure-recovery-time.py      # Recovery measurement script
