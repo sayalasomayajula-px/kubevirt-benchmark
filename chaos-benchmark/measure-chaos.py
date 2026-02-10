@@ -254,9 +254,18 @@ def create_vm_with_data_volumes(vm_name: str, namespace: str, vm_yaml: str,
             import subprocess
             import yaml as pyyaml
 
-            # Read VM template
+            # Read VM template as text and replace placeholders
             with open(vm_yaml, 'r') as f:
-                vm_template = pyyaml.safe_load(f)
+                template_text = f.read()
+
+            # Replace placeholders with actual values
+            template_text = template_text.replace('{{VM_NAME}}', vm_name)
+            template_text = template_text.replace('{{STORAGE_CLASS_NAME}}', storage_class)
+            template_text = template_text.replace('{{DATASOURCE_NAME}}', args.datasource_name)
+            template_text = template_text.replace('{{DATASOURCE_NAMESPACE}}', args.datasource_namespace)
+
+            # Parse the YAML after placeholder replacement
+            vm_template = pyyaml.safe_load(template_text)
 
             # Update VM metadata
             vm_template['metadata']['name'] = vm_name
