@@ -327,7 +327,7 @@ grep "storageClassName:" examples/vm-templates/*.yaml
 > - Storage class MUST be compatible with KubeVirt DataVolumes
 > - Storage class MUST support ReadWriteOnce access mode
 > - For capacity tests: Storage class SHOULD support volume expansion (AllowVolumeExpansion: true)
-> - For snapshot tests: Storage class provisioner SHOULD support CSI snapshots (use `--skip-snapshot-job` if not supported)
+> - For snapshot tests: Storage class provisioner SHOULD support CSI snapshots (use `--skip-snapshot` if not supported)
 
 #### Step 6: Create SSH Pod for Network Tests
 
@@ -836,9 +836,16 @@ Tests cluster resilience by running concurrent chaos operations including VM cre
 
 **Key Features**:
 - **Mandatory concurrency** (`--concurrency` is required)
-- **Volume cloning** (new phase added)
+- **Volume cloning** (Phase 3)
 - **Proper scheduling timeout** (tracks both Scheduling AND Provisioning states)
 - **Accurate phase tracking** (only shows phases that actually executed)
+
+**Phases**:
+1. **Create VMs** - Creates VMs with data volumes
+2. **Resize Volumes** - Expands volume sizes
+3. **Clone Volumes** - Clones PVCs from source volumes
+4. **Restart VMs** - Restarts VMs and waits for Running state
+5. **Create Snapshots** - Creates VM snapshots
 
 #### Basic Chaos Test
 
@@ -865,6 +872,27 @@ python3 measure-chaos.py --storage-class YOUR-STORAGE-CLASS --concurrency 2
 python3 measure-chaos.py --storage-class YOUR-STORAGE-CLASS --concurrency 5 --vms 10
 ```
 
+#### Full Example with All Options
+
+```bash
+# Comprehensive chaos benchmark with all configuration options
+virtbench chaos-benchmark \
+  --storage-class px-fa-direct-access \
+  --concurrency 2 \
+  --vms 5 \
+  --data-volume-count 1 \
+  --max-iterations 1 \
+  --min-vol-size 40Gi \
+  --min-vol-inc-size 10Gi \
+  --vm-memory 2Gi \
+  --vm-cpu-cores 1 \
+  --datasource-name rhel9 \
+  --datasource-namespace openshift-virtualization-os-images \
+  --save-results
+```
+
+> **Note**: Volume sizes must include units (e.g., `40Gi`, `100Mi`). Using just `40` without a unit will fail.
+
 #### Skip Specific Phases
 
 **virtbench CLI:**
@@ -873,15 +901,15 @@ python3 measure-chaos.py --storage-class YOUR-STORAGE-CLASS --concurrency 5 --vm
 virtbench chaos-benchmark \
   --storage-class YOUR-STORAGE-CLASS \
   --concurrency 2 \
-  --skip-clone-job
+  --skip-clone
 
 # Skip multiple phases
 virtbench chaos-benchmark \
   --storage-class YOUR-STORAGE-CLASS \
   --concurrency 2 \
-  --skip-resize-job \
-  --skip-clone-job \
-  --skip-snapshot-job
+  --skip-resize \
+  --skip-clone \
+  --skip-snapshot
 ```
 
 #### Save Results
@@ -1455,9 +1483,9 @@ kubectl get storageclass
 | `--namespace` | `virt-chaos-benchmark` | Namespace for test resources |
 | `--max-iterations` | `0` (unlimited) | Maximum number of iterations |
 | `--vms` | `5` | Number of VMs per iteration |
-| `--data-volume-count` | `9` | Number of data volumes per VM |
-| `--min-vol-size` | `30Gi` | Initial volume size |
-| `--min-vol-inc-size` | `10Gi` | Volume size increment for resize |
+| `--data-volume-count` | `1` | Number of data volumes per VM |
+| `--min-vol-size` | `30Gi` | Initial volume size (must include unit, e.g., `30Gi`) |
+| `--min-vol-inc-size` | `10Gi` | Volume size increment for resize (must include unit, e.g., `10Gi`) |
 
 #### VM Template Configuration
 
@@ -1472,12 +1500,12 @@ kubectl get storageclass
 
 #### Skip Options
 
-| Option | Description |
-|--------|-------------|
-| `--skip-resize-job` | Skip volume resize phase |
-| `--skip-clone-job` | Skip volume clone phase |
-| `--skip-snapshot-job` | Skip snapshot phase |
-| `--skip-restart-job` | Skip restart phase |
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--skip-resize` | `False` | Skip volume resize phase |
+| `--skip-clone` | `False` | Skip volume clone phase |
+| `--skip-snapshot` | `False` | Skip snapshot phase |
+| `--skip-restart` | `False` | Skip restart phase |
 
 #### Execution Options
 
@@ -1581,21 +1609,21 @@ Detailed logs are saved to the specified log file with:
   ```bash
   kubectl get storageclass YOUR-STORAGE-CLASS -o jsonpath='{.allowVolumeExpansion}'
   ```
-- If `false`, use `--skip-resize-job` to skip this phase
+- If `false`, use `--skip-resize` to skip this phase
 
 **Issue**: Volume clone fails
 - Check if your storage class supports cloning:
   ```bash
   kubectl get storageclass YOUR-STORAGE-CLASS -o yaml | grep -i clone
   ```
-- If not supported, use `--skip-clone-job` to skip this phase
+- If not supported, use `--skip-clone` to skip this phase
 
 **Issue**: Snapshot creation fails
 - Check if VolumeSnapshotClass is configured:
   ```bash
   kubectl get volumesnapshotclass
   ```
-- If not available, use `--skip-snapshot-job` to skip this phase
+- If not available, use `--skip-snapshot` to skip this phase
 
 **Issue**: Out of resources (VM creation fails)
 - This indicates you've reached capacity limits. Check:
