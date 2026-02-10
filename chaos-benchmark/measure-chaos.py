@@ -41,10 +41,9 @@ DEFAULT_NAMESPACE = 'virt-chaos-benchmark'
 DEFAULT_VM_YAML = '../examples/vm-templates/vm-template.yaml'
 DEFAULT_VM_NAME = 'rhel-9-vm'
 DEFAULT_VMS_PER_ITERATION = 5
-DEFAULT_DATA_VOLUME_COUNT = 9
+DEFAULT_DATA_VOLUME_COUNT = 1  # Reduced from 9 to 1
 DEFAULT_MIN_VOL_SIZE = '30Gi'
 DEFAULT_MIN_VOL_INC_SIZE = '10Gi'
-DEFAULT_POLL_INTERVAL = 5
 DEFAULT_CONCURRENCY = 2
 
 
@@ -64,8 +63,8 @@ Examples:
   # Run with maximum iterations limit
   python3 measure-chaos.py --storage-class YOUR-STORAGE-CLASS --max-iterations 10 --concurrency 2
 
-  # Skip specific jobs
-  python3 measure-chaos.py --storage-class YOUR-STORAGE-CLASS --skip-resize-job --skip-clone-job --concurrency 2
+  # Skip specific phases
+  python3 measure-chaos.py --storage-class YOUR-STORAGE-CLASS --skip-resize --skip-clone --concurrency 2
 
   # Cleanup only mode
   python3 measure-chaos.py --cleanup-only
@@ -88,9 +87,9 @@ Examples:
     parser.add_argument('--data-volume-count', type=int, default=DEFAULT_DATA_VOLUME_COUNT,
                         help=f'Number of data volumes per VM (default: {DEFAULT_DATA_VOLUME_COUNT})')
     parser.add_argument('--min-vol-size', type=str, default=DEFAULT_MIN_VOL_SIZE,
-                        help=f'Minimum volume size (default: {DEFAULT_MIN_VOL_SIZE})')
+                        help=f'Minimum volume size, e.g., 30Gi, 100Mi (default: {DEFAULT_MIN_VOL_SIZE})')
     parser.add_argument('--min-vol-inc-size', type=str, default=DEFAULT_MIN_VOL_INC_SIZE,
-                        help=f'Minimum volume size increment (default: {DEFAULT_MIN_VOL_INC_SIZE})')
+                        help=f'Volume size increment for resize, e.g., 10Gi, 50Mi (default: {DEFAULT_MIN_VOL_INC_SIZE})')
 
     # VM template configuration
     parser.add_argument('--vm-yaml', type=str, default=DEFAULT_VM_YAML,
@@ -107,18 +106,16 @@ Examples:
                         help='VM CPU cores (default: 1)')
 
     # Skip options
-    parser.add_argument('--skip-resize-job', action='store_true',
-                        help='Skip volume resize job')
-    parser.add_argument('--skip-clone-job', action='store_true',
-                        help='Skip volume clone job')
-    parser.add_argument('--skip-snapshot-job', action='store_true',
-                        help='Skip snapshot job')
-    parser.add_argument('--skip-restart-job', action='store_true',
-                        help='Skip restart job')
+    parser.add_argument('--skip-resize', action='store_true',
+                        help='Skip volume resize phase')
+    parser.add_argument('--skip-clone', action='store_true',
+                        help='Skip volume clone phase')
+    parser.add_argument('--skip-snapshot', action='store_true',
+                        help='Skip VM snapshot phase')
+    parser.add_argument('--skip-restart', action='store_true',
+                        help='Skip VM restart phase')
 
     # Execution options
-    parser.add_argument('--poll-interval', type=int, default=DEFAULT_POLL_INTERVAL,
-                        help=f'Polling interval in seconds (default: {DEFAULT_POLL_INTERVAL})')
     parser.add_argument('--scheduling-timeout', type=int, default=120,
                         help='Seconds to wait in Scheduling/Provisioning state before failing (default: 120)')
     parser.add_argument('--vm-timeout', type=int, default=1800,
@@ -181,9 +178,27 @@ def get_storage_classes(storage_class_arg: str) -> List[str]:
 
 def clone_pvc(source_pvc: str, clone_name: str, namespace: str, storage_class: str,
               logger) -> bool:
-    """Clone a PVC using dataSource."""
+    """Clone a PVC using dataSource. Copies spec from source PVC."""
     try:
-        size = get_pvc_size(source_pvc, namespace, logger)
+        import subprocess
+
+        # Get source PVC spec
+        returncode, stdout, stderr = run_kubectl_command(
+            ['get', 'pvc', source_pvc, '-n', namespace, '-o', 'json'],
+            check=False, logger=logger
+        )
+        if returncode != 0:
+            logger.error(f"Failed to get source PVC {source_pvc}: {stderr}")
+            return False
+
+        source_pvc_data = json.loads(stdout)
+        source_spec = source_pvc_data.get('spec', {})
+
+        # Get properties from source PVC
+        size = source_spec.get('resources', {}).get('requests', {}).get('storage')
+        access_modes = source_spec.get('accessModes', ['ReadWriteOnce'])
+        volume_mode = source_spec.get('volumeMode', 'Filesystem')
+
         if not size:
             logger.error(f"Failed to get size of source PVC {source_pvc}")
             return False
@@ -193,14 +208,14 @@ def clone_pvc(source_pvc: str, clone_name: str, namespace: str, storage_class: s
             "kind": "PersistentVolumeClaim",
             "metadata": {"name": clone_name, "namespace": namespace},
             "spec": {
-                "accessModes": ["ReadWriteOnce"],
+                "accessModes": access_modes,
                 "storageClassName": storage_class,
+                "volumeMode": volume_mode,
                 "resources": {"requests": {"storage": size}},
                 "dataSource": {"kind": "PersistentVolumeClaim", "name": source_pvc}
             }
         }
 
-        import subprocess
         process = subprocess.Popen(
             ['kubectl', 'create', '-f', '-', '-n', namespace],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
@@ -258,11 +273,14 @@ def create_vm_with_data_volumes(vm_name: str, namespace: str, vm_yaml: str,
             with open(vm_yaml, 'r') as f:
                 template_text = f.read()
 
-            # Replace placeholders with actual values
+            # Replace all placeholders with actual values
             template_text = template_text.replace('{{VM_NAME}}', vm_name)
             template_text = template_text.replace('{{STORAGE_CLASS_NAME}}', storage_class)
             template_text = template_text.replace('{{DATASOURCE_NAME}}', args.datasource_name)
             template_text = template_text.replace('{{DATASOURCE_NAMESPACE}}', args.datasource_namespace)
+            template_text = template_text.replace('{{STORAGE_SIZE}}', volume_size)
+            template_text = template_text.replace('{{VM_MEMORY}}', args.vm_memory)
+            template_text = template_text.replace('{{VM_CPU_CORES}}', str(args.vm_cpu_cores))
 
             # Parse the YAML after placeholder replacement
             vm_template = pyyaml.safe_load(template_text)
@@ -496,7 +514,7 @@ def run_iteration(iteration: int, namespace: str, storage_class: str, args, logg
     logger.info(f"{Colors.OKGREEN}Phase 1 COMPLETE: {len(successful_vms)} VMs running (took {phase_duration:.2f}s){Colors.ENDC}")
 
     # Phase 2: Resize Volumes (concurrent)
-    if not args.skip_resize_job:
+    if not args.skip_resize:
         logger.info(f"\n{Colors.HEADER}Phase 2: Resizing Volumes (concurrency: {args.concurrency}){Colors.ENDC}")
         phase_start = time.time()
 
@@ -530,10 +548,10 @@ def run_iteration(iteration: int, namespace: str, storage_class: str, args, logg
         phases_executed.append('Resize Volumes')
         logger.info(f"{Colors.OKGREEN}Phase 2 COMPLETE: All volumes resized (took {phase_duration:.2f}s){Colors.ENDC}")
     else:
-        logger.info(f"\n{Colors.WARNING}Phase 2: SKIPPED (--skip-resize-job){Colors.ENDC}")
+        logger.info(f"\n{Colors.WARNING}Phase 2: SKIPPED (--skip-resize){Colors.ENDC}")
 
-    # Phase 3: Clone Volumes (concurrent) - NEW PHASE
-    if not args.skip_clone_job:
+    # Phase 3: Clone Volumes (concurrent)
+    if not args.skip_clone:
         logger.info(f"\n{Colors.HEADER}Phase 3: Cloning Volumes (concurrency: {args.concurrency}){Colors.ENDC}")
         phase_start = time.time()
         clones_created = []
@@ -569,10 +587,10 @@ def run_iteration(iteration: int, namespace: str, storage_class: str, args, logg
         phases_executed.append('Clone Volumes')
         logger.info(f"{Colors.OKGREEN}Phase 3 COMPLETE: {len(clones_created)} clones created (took {phase_duration:.2f}s){Colors.ENDC}")
     else:
-        logger.info(f"\n{Colors.WARNING}Phase 3: SKIPPED (--skip-clone-job){Colors.ENDC}")
+        logger.info(f"\n{Colors.WARNING}Phase 3: SKIPPED (--skip-clone){Colors.ENDC}")
 
     # Phase 4: Restart VMs (concurrent)
-    if not args.skip_restart_job:
+    if not args.skip_restart:
         logger.info(f"\n{Colors.HEADER}Phase 4: Restarting VMs (concurrency: {args.concurrency}){Colors.ENDC}")
         phase_start = time.time()
 
@@ -601,10 +619,10 @@ def run_iteration(iteration: int, namespace: str, storage_class: str, args, logg
         phases_executed.append('Restart VMs')
         logger.info(f"{Colors.OKGREEN}Phase 4 COMPLETE: All VMs restarted (took {phase_duration:.2f}s){Colors.ENDC}")
     else:
-        logger.info(f"\n{Colors.WARNING}Phase 4: SKIPPED (--skip-restart-job){Colors.ENDC}")
+        logger.info(f"\n{Colors.WARNING}Phase 4: SKIPPED (--skip-restart){Colors.ENDC}")
 
     # Phase 5: Snapshot VMs (concurrent)
-    if not args.skip_snapshot_job:
+    if not args.skip_snapshot:
         logger.info(f"\n{Colors.HEADER}Phase 5: Creating VM Snapshots (concurrency: {args.concurrency}){Colors.ENDC}")
         phase_start = time.time()
         snapshots_created = []
@@ -636,7 +654,7 @@ def run_iteration(iteration: int, namespace: str, storage_class: str, args, logg
         phases_executed.append('Create Snapshots')
         logger.info(f"{Colors.OKGREEN}Phase 5 COMPLETE: {len(snapshots_created)} snapshots created (took {phase_duration:.2f}s){Colors.ENDC}")
     else:
-        logger.info(f"\n{Colors.WARNING}Phase 5: SKIPPED (--skip-snapshot-job){Colors.ENDC}")
+        logger.info(f"\n{Colors.WARNING}Phase 5: SKIPPED (--skip-snapshot){Colors.ENDC}")
 
     logger.info(f"\n{Colors.OKGREEN}{Colors.BOLD}ITERATION {iteration} COMPLETE{Colors.ENDC}")
     return True, False, len(successful_vms)

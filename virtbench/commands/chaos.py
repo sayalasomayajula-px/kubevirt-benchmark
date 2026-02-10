@@ -19,20 +19,19 @@ console = Console()
 @click.option('--namespace', '-n', default='virt-chaos-benchmark', help='Namespace for test resources')
 @click.option('--vms', default=5, type=int, help='Number of VMs to create per iteration')
 @click.option('--max-iterations', default=0, type=int, help='Maximum number of iterations (0 for unlimited)')
-@click.option('--data-volume-count', default=9, type=int, help='Number of data volumes per VM')
-@click.option('--min-vol-size', default='30Gi', help='Minimum volume size')
-@click.option('--min-vol-inc-size', default='10Gi', help='Minimum volume size increment')
+@click.option('--data-volume-count', default=1, type=int, help='Number of data volumes per VM (default: 1)')
+@click.option('--min-vol-size', default='30Gi', help='Minimum volume size (e.g., 30Gi, 100Mi)')
+@click.option('--min-vol-inc-size', default='10Gi', help='Volume size increment for resize (e.g., 10Gi, 50Mi)')
 @click.option('--vm-yaml', default='examples/vm-templates/vm-template.yaml', help='Path to VM YAML template')
 @click.option('--vm-name', default='rhel-9-vm', help='Base VM name')
 @click.option('--datasource-name', default='rhel9', help='DataSource name')
 @click.option('--datasource-namespace', default='openshift-virtualization-os-images', help='DataSource namespace')
 @click.option('--vm-memory', default='2048M', help='VM memory')
 @click.option('--vm-cpu-cores', default=1, type=int, help='VM CPU cores')
-@click.option('--skip-resize-job', is_flag=True, help='Skip volume resize job')
-@click.option('--skip-clone-job', is_flag=True, help='Skip volume clone job')
-@click.option('--skip-snapshot-job', is_flag=True, help='Skip snapshot job')
-@click.option('--skip-restart-job', is_flag=True, help='Skip restart job')
-@click.option('--poll-interval', default=5, type=int, help='Seconds between status checks')
+@click.option('--skip-resize', is_flag=True, help='Skip volume resize phase')
+@click.option('--skip-clone', is_flag=True, help='Skip volume clone phase')
+@click.option('--skip-snapshot', is_flag=True, help='Skip VM snapshot phase')
+@click.option('--skip-restart', is_flag=True, help='Skip VM restart phase')
 @click.option('--scheduling-timeout', default=120, type=int,
               help='Seconds to wait in Scheduling/Provisioning state before failing (default: 120)')
 @click.option('--vm-timeout', default=1800, type=int, help='Total timeout for VM to reach Running state (default: 1800)')
@@ -61,8 +60,8 @@ def chaos_benchmark(ctx, **kwargs):
       # Run with custom max iterations
       virtbench chaos-benchmark --storage-class YOUR-STORAGE-CLASS --concurrency 5 --max-iterations 20
 
-      # Skip specific jobs
-      virtbench chaos-benchmark --storage-class YOUR-STORAGE-CLASS --concurrency 2 --skip-clone-job
+      # Skip specific phases
+      virtbench chaos-benchmark --storage-class YOUR-STORAGE-CLASS --concurrency 2 --skip-clone
 
       # Cleanup only mode
       virtbench chaos-benchmark --cleanup-only --concurrency 1
@@ -139,7 +138,6 @@ def chaos_benchmark(ctx, **kwargs):
         'datasource-namespace': kwargs['datasource_namespace'],
         'vm-memory': kwargs['vm_memory'],
         'vm-cpu-cores': kwargs['vm_cpu_cores'],
-        'poll-interval': kwargs['poll_interval'],
         'scheduling-timeout': kwargs['scheduling_timeout'],
         'vm-timeout': kwargs['vm_timeout'],
         'max-create-retries': kwargs['max_create_retries'],
@@ -147,14 +145,14 @@ def chaos_benchmark(ctx, **kwargs):
     }
 
     # Add skip flags
-    if kwargs['skip_resize_job']:
-        python_args['skip-resize-job'] = True
-    if kwargs['skip_clone_job']:
-        python_args['skip-clone-job'] = True
-    if kwargs['skip_snapshot_job']:
-        python_args['skip-snapshot-job'] = True
-    if kwargs['skip_restart_job']:
-        python_args['skip-restart-job'] = True
+    if kwargs['skip_resize']:
+        python_args['skip-resize'] = True
+    if kwargs['skip_clone']:
+        python_args['skip-clone'] = True
+    if kwargs['skip_snapshot']:
+        python_args['skip-snapshot'] = True
+    if kwargs['skip_restart']:
+        python_args['skip-restart'] = True
 
     # Add cleanup flag
     if kwargs['cleanup']:
