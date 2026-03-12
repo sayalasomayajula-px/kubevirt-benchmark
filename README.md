@@ -17,6 +17,7 @@ A comprehensive, vendor-neutral performance testing toolkit for KubeVirt virtual
   - [Scenario 4: Live Migration Testing](#scenario-4-live-migration-testing)
   - [Scenario 5: Capacity Benchmark Testing](#scenario-5-capacity-benchmark-testing)
   - [Scenario 6: Failure and Recovery Testing](#scenario-6-failure-and-recovery-testing)
+  - [Scenario 7: FIO Storage I/O Benchmark](#scenario-7-fio-storage-io-benchmark)
 - [Boot Storm Testing Guide](#boot-storm-testing-guide)
 - [VM Template Guide](#vm-template-guide)
 - [Cluster Validation Guide](#cluster-validation-guide)
@@ -42,6 +43,7 @@ This suite provides automated performance testing tools to measure and validate 
 - **Boot Storm Testing**: Test VM startup performance when powering on multiple VMs simultaneously
 - **Live Migration Testing**: Measure VM live migration performance across different scenarios
 - **Capacity Benchmark Testing**: Test cluster capacity limits with comprehensive VM operations (create, resize, restart, snapshot, migrate)
+- **FIO Storage I/O Benchmark**: Measure storage IOPS, bandwidth, and latency across multiple VMs
 - **Single Node Testing**: Pin all VMs to a single node for node-level capacity testing
 - **Failure and Recovery Testing**: Validate VM recovery times after node failures
 - **VM Snapshot Testing**: Test VM snapshot creation and readiness
@@ -1085,6 +1087,133 @@ python3 measure-recovery-time.py \
 
 ---
 
+### Scenario 7: FIO Storage I/O Benchmark
+
+Tests storage I/O performance by running FIO benchmarks across multiple VMs in parallel.
+
+**Use Case**: Measure storage IOPS, bandwidth, and latency under various workload patterns.
+
+#### Basic FIO Benchmark
+
+**virtbench CLI:**
+```bash
+# Run FIO benchmark on 10 VMs (Runs with default config)
+virtbench fio \
+  --start 1 --end 10 \
+  --storage-class YOUR-STORAGE-CLASS \
+  --save-results
+
+# Custom FIO parameters
+virtbench fio \
+  --start 1 --end 20 \
+  --storage-class YOUR-STORAGE-CLASS \
+  --fio-runtime 300 \
+  --fio-rw randrw \
+  --fio-bs 4k \
+  --fio-iodepth 64 \
+  --save-results \
+  --cleanup
+```
+
+**Python script:**
+```bash
+cd fio-benchmark
+
+# Basic FIO test
+python3 measure-fio-performance.py \
+  --start 1 --end 10 \
+  --storage-class YOUR-STORAGE-CLASS \
+  --save-results
+
+# Full configuration
+python3 measure-fio-performance.py \
+  --start 1 --end 20 \
+  --storage-class YOUR-STORAGE-CLASS \
+  --fio-runtime 300 \
+  --fio-rw randrw \
+  --fio-bs 4k \
+  --fio-iodepth 64 \
+  --fio-numjobs 4 \
+  --save-results \
+  --results-dir ../results/my-test \
+  --cleanup
+```
+
+#### FIO Configuration Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--start` | (required) | Starting namespace index |
+| `--end` | (required) | Ending namespace index |
+| `--storage-class` | (required) | Storage class name |
+| `--namespace-prefix` | `fio-benchmark` | Namespace prefix (creates `fio-benchmark-1`, etc.) |
+| `--fio-runtime` | `300` | FIO test duration in seconds |
+| `--fio-rw` | `randwrite` | I/O pattern: `read`, `write`, `randread`, `randwrite`, `randrw`, `rw` |
+| `--fio-bs` | `4k` | Block size (e.g., `4k`, `8k`, `64k`, `1M`) |
+| `--fio-iodepth` | `64` | I/O queue depth |
+| `--fio-numjobs` | `4` | Number of parallel FIO jobs per VM |
+| `--fio-size` | `10G` | Test file size per job |
+
+#### Result Collection Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--collect-retries` | `8` | Max retries for collecting results from VMs |
+| `--collect-retry-delay` | `20` | Delay (seconds) between collection retries |
+| `--collect-concurrency` | `5` | Max concurrent result collections |
+
+#### Output Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--save-results` | `false` | Save results to JSON/CSV files |
+| `--results-dir` | `results` | Base directory for results |
+| `--cleanup` | `false` | Delete VMs and namespaces after test |
+| `--yes` | `false` | Skip confirmation prompts |
+
+#### FIO Workload Examples
+
+```bash
+# Sequential read (max bandwidth)
+virtbench fio --start 1 --end 10 --storage-class YOUR-SC \
+  --fio-rw read --fio-bs 1M --fio-iodepth 32 --save-results
+
+# Random write (database workload)
+virtbench fio --start 1 --end 10 --storage-class YOUR-SC \
+  --fio-rw randwrite --fio-bs 4k --fio-iodepth 64 --save-results
+
+# Mixed read/write (general workload)
+virtbench fio --start 1 --end 10 --storage-class YOUR-SC \
+  --fio-rw randrw --fio-bs 4k --fio-iodepth 64 --save-results
+```
+
+#### FIO Results
+
+Results include per-VM and aggregated metrics:
+- **IOPS**: Read/Write operations per second
+- **Bandwidth**: Read/Write throughput in MiB/s
+- **Latency**: Read/Write latency in milliseconds
+
+Results are saved to:
+```
+results/{timestamp}_fio_benchmark_{start}-{end}/
+├── aggregated_results.json    # Summary across all VMs
+├── aggregated_results.csv     # CSV format
+└── per-vm-results/            # Individual VM results
+    ├── fio-benchmark-1/
+    │   └── fio_raw.json
+    └── ...
+```
+
+**View results in dashboard:**
+```bash
+cd dashboard
+python3 generate_dashboard.py --base-dir ../results
+open output/dashboard.html
+```
+
+---
+
 ## Boot Storm Testing Guide
 
 ### What is Boot Storm Testing?
@@ -1923,6 +2052,7 @@ kubevirt-benchmark-suite/
 │   │   ├── datasource_clone.py       # DataSource clone subcommand
 │   │   ├── migration.py              # Migration subcommand
 │   │   ├── capacity.py               # Capacity benchmark subcommand
+│   │   ├── fio.py                    # FIO storage I/O benchmark subcommand
 │   │   ├── failure_recovery.py       # Failure recovery subcommand
 │   │   ├── validate.py               # Cluster validation subcommand
 │   │   └── version.py                # Version subcommand
@@ -1946,6 +2076,9 @@ kubevirt-benchmark-suite/
 │   ├── run-far-test.sh               # FAR test orchestration
 │   ├── patch-vms.sh                  # VM patching helper
 │   └── far-template.yaml             # FAR configuration template
+│
+├── fio-benchmark/                     # FIO storage I/O benchmark
+│   └── measure-fio-performance.py    # FIO benchmark script (IOPS, BW, latency)
 │
 ├── utils/                             # Shared utilities
 │   ├── common.py                     # Common functions and logging

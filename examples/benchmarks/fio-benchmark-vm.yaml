@@ -1,20 +1,35 @@
 # FIO Benchmark VM Template for KubeVirt
 #
 # This template creates a VM with FIO benchmarking capabilities.
-# FIO runs inside the VM and writes results to /var/log/fio/fio.log
-#
-# To view results:
-#   virtctl ssh cloud-user@fio-benchmark-vm
-#   cat /var/log/fio/fio.log
-#
-# Template Variables (replace before applying):
-#   {{STORAGE_CLASS_NAME}}   - Storage class name for VM root disk and scratch disk
+# Results are automatically written to a shared PVC for easy collection.
 #
 # Usage:
-#   sed -i '' 's/{{STORAGE_CLASS_NAME}}/YOUR-STORAGE-CLASS/g' fio-benchmark-vm.yaml
-#   kubectl apply -f fio-benchmark-vm.yaml -n <namespace>
+#   1. Replace storage class and apply:
+#      sed 's/{{STORAGE_CLASS_NAME}}/YOUR-STORAGE-CLASS/g' fio-benchmark-vm.yaml | kubectl apply -f - -n <namespace>
 #
-# FIO Config Changes: To Run fio with custom parameters make sure we add the values in fio.job in fio-benchmark-vm-fio-job-config configmap
+#   2. Wait for FIO to complete (~5 minutes with default config)
+#
+#   3. Collect results:
+#      kubectl logs -n <namespace> job/fio-results-collector
+#
+#   4. Generate dashboard:
+#      kubectl logs -n <namespace> job/fio-results-collector > results/fio/summary_fio_benchmark.json
+#      cd dashboard && python3 generate_dashboard.py --base-dir ../results
+#
+# FIO Config: Modify fio.job in the ConfigMap below
+---
+# PVC for FIO results (shared between VM and collector)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fio-results-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: {{STORAGE_CLASS_NAME}}
 ---
 # ConfigMap: FIO Job Configuration
 apiVersion: v1
@@ -106,6 +121,11 @@ spec:
               disk:
                 bus: virtio
               serial: FIOCONFIG
+            # Results disk (shared PVC)
+            - name: results-disk
+              disk:
+                bus: virtio
+              serial: FIORESULTS
           interfaces:
             - name: default
               masquerade: {}
@@ -181,12 +201,26 @@ spec:
                       mount /dev/$FIO_DISK /mnt/fio-config 2>/dev/null || true
                     fi
 
+                    # Mount results disk (by serial number)
+                    mkdir -p /mnt/results
+                    RESULTS_DISK=$(lsblk --nodeps -no NAME,SERIAL | grep FIORESULTS | awk '{print $1}')
+                    if [ -n "$RESULTS_DISK" ]; then
+                      # Format if needed
+                      if ! blkid /dev/$RESULTS_DISK | grep -q xfs; then
+                        mkfs.xfs -f /dev/$RESULTS_DISK
+                      fi
+                      mount /dev/$RESULTS_DISK /mnt/results
+                    fi
+
                     # Run FIO if config exists
                     if [ -f /mnt/fio-config/fio.job ]; then
                       echo "Starting FIO benchmark..."
                       fio /mnt/fio-config/fio.job \
                         --status-interval=60 \
-                        --output=/var/log/fio/fio.log &
+                        --output-format=json \
+                        --output=/mnt/results/fio_raw.json
+
+                      echo "completed" > /mnt/results/fio_complete
                     else
                       echo "FIO config not found!"
                     fi
@@ -197,3 +231,67 @@ spec:
         - name: fio-config-disk
           configMap:
             name: fio-benchmark-vm-fio-job-config
+        # Results PVC (shared with collector)
+        - name: results-disk
+          persistentVolumeClaim:
+            claimName: fio-results-pvc
+---
+# Job to collect, parse and display FIO results
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fio-results-collector
+spec:
+  backoffLimit: 10
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: collector
+          image: python:3.11-slim
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Waiting for FIO to complete..."
+              while [ ! -f /results/fio_complete ]; do
+                sleep 30
+                echo "  Still waiting..."
+              done
+              echo "FIO completed. Parsing results..."
+              python3 << 'EOF'
+              import json
+              from datetime import datetime
+              with open('/results/fio_raw.json') as f:
+                  fio = json.load(f)
+              opts = fio.get("global options", {})
+              ri = wi = rb = wb = rl = wl = 0
+              for job in fio.get("jobs", []):
+                  r, w = job.get("read", {}), job.get("write", {})
+                  ri += r.get("iops", 0); wi += w.get("iops", 0)
+                  rb += r.get("bw_bytes", 0); wb += w.get("bw_bytes", 0)
+                  if r.get("lat_ns"): rl = r["lat_ns"].get("mean", 0)
+                  if w.get("lat_ns"): wl = w["lat_ns"].get("mean", 0)
+              summary = {
+                  "test_name": opts.get("name", "FIO Benchmark"),
+                  "timestamp": datetime.now().isoformat(),
+                  "status": "completed",
+                  "runtime_sec": int(opts.get("runtime", 0)),
+                  "config": {"bs": opts.get("bs"), "rw": opts.get("rw"), "ioengine": opts.get("ioengine"),
+                             "iodepth": int(opts.get("iodepth", 0)), "numjobs": int(opts.get("numjobs", 1)),
+                             "direct": int(opts.get("direct", 0)), "size": opts.get("size")},
+                  "metrics": {
+                      "read": {"iops": round(ri, 2), "bw_mibps": round(rb/1024/1024, 2), "lat_mean_ms": round(rl/1e6, 3)},
+                      "write": {"iops": round(wi, 2), "bw_mibps": round(wb/1024/1024, 2), "lat_mean_ms": round(wl/1e6, 3)},
+                  },
+              }
+              print("=== FIO BENCHMARK RESULTS ===")
+              print(json.dumps(summary, indent=2))
+              EOF
+          volumeMounts:
+            - name: results
+              mountPath: /results
+      volumes:
+        - name: results
+          persistentVolumeClaim:
+            claimName: fio-results-pvc
