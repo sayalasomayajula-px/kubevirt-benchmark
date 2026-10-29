@@ -73,10 +73,10 @@ class ParseFioResultsTests(unittest.TestCase):
         with mock.patch.object(fio, "get_vmi_ip", return_value="192.0.2.1"), \
                 mock.patch.object(fio, "run_ssh_command", side_effect=["1", None]):
             with tempfile.TemporaryDirectory() as output_dir:
-                collected = fio.collect_fio_results(
+                collected, _ = fio.collect_fio_results_once(
                     "fio-vm-1", "fio-vm", {"pod": "ssh", "pod_ns": "default",
                                            "user": "cloud-user", "password": "secret"},
-                    output_dir, mock.Mock(), max_retries=1, retry_delay=0,
+                    output_dir, mock.Mock(),
                 )
 
         result = fio.parse_fio_results("fio-vm-1", collected)
@@ -101,7 +101,7 @@ class ParseFioResultsTests(unittest.TestCase):
             action="gather-results", save_results=False, log_file=None, log_level="INFO",
             namespace_prefix="fio", start=1, end=1, fio_runtime=10, fio_bs="4k",
             fio_rw="read", fio_iodepth=1, fio_numjobs=1, fio_size="1G",
-            ssh_pod=None, ssh_pod_ns=None, vm_user="root", vm_password=None,
+            fio_ramp_time=0, fio_rwmixread=70, ssh_pod=None, ssh_pod_ns=None, vm_user="root", vm_password=None,
         )
         with mock.patch.object(fio, "parse_args", return_value=args), \
                 mock.patch.object(fio, "setup_logging"), \
@@ -116,7 +116,7 @@ class ParseFioResultsTests(unittest.TestCase):
             action="gather-results", save_results=False, log_file=None, log_level="INFO",
             namespace_prefix="fio", start=1, end=1, fio_runtime=10, fio_bs="4k",
             fio_rw="read", fio_iodepth=1, fio_numjobs=1, fio_size="1G",
-            ssh_pod=None, ssh_pod_ns=None, vm_user="root", vm_password=None,
+            fio_ramp_time=0, fio_rwmixread=70, ssh_pod=None, ssh_pod_ns=None, vm_user="root", vm_password=None,
         )
         with mock.patch.object(fio, "parse_args", return_value=args), \
                 mock.patch.object(fio, "setup_logging"), \
@@ -153,7 +153,9 @@ class CompletionTests(unittest.TestCase):
                     mock.patch.object(fio, "get_vmi_ip", return_value="192.0.2.1"), \
                     mock.patch.object(fio, "run_ssh_command", side_effect=outputs), \
                     mock.patch.object(fio.time, "sleep"):
-                data = fio.collect_fio_results("ns", "vm", self.ssh, directory, mock.Mock(), 2, 0)
+                data = fio.collect_all_fio_results(
+                    ["ns"], lambda ns: fio.collect_fio_results_once(ns, "vm", self.ssh, directory, mock.Mock()),
+                    mock.Mock(), 1, 2, 0, sleep=lambda _: None)["ns"]
                 if data is None:
                     self.assertFalse(success)
                     self.assertFalse(unverified)
@@ -167,10 +169,18 @@ class CompletionTests(unittest.TestCase):
             self.assertIsNone(fio.run_ssh_command("192.0.2.1", "cat x", "ssh", "default", "root", "secret"))
 
     def test_gather_waits_before_collection(self):
+        args = SimpleNamespace(vm_name="vm", collect_concurrency=1, collect_retries=2,
+                               collect_retry_delay=0)
         with mock.patch.object(fio, "wait_for_fio_complete", return_value=False) as wait, \
-                mock.patch.object(fio, "collect_fio_results") as collect:
-            self.assertTrue(fio.wait_and_collect_fio_results("ns", "vm", self.ssh, "/tmp", mock.Mock(), 42, 2, 0)["_virtbench_completion_timeout"])
+                mock.patch.object(fio, "collect_fio_results_once") as collect, \
+                mock.patch("builtins.print"):
+            timed_out = fio.wait_for_all_fio_complete(["ns"], "vm", self.ssh, 42, 1, mock.Mock())
+            results, raw = fio.collect_results_for_vms(["ns"], args, self.ssh, "/tmp", mock.Mock(),
+                                                       timed_out=timed_out)
+            self.assertEqual(timed_out, ["ns"])
             self.assertEqual(wait.call_args.args[3], 42)
+            self.assertFalse(results[0]["success"])
+            self.assertEqual(raw, [])
             collect.assert_not_called()
 
     def test_action_timeout_propagation(self):
@@ -189,7 +199,7 @@ class CompletionTests(unittest.TestCase):
                             mock.patch.object(fio, "warn_existing_vms"), \
                             mock.patch.object(fio, "create_namespaces_parallel"), \
                             mock.patch.object(fio, "apply_manifests", return_value=[]), \
-                            mock.patch.object(fio, "collect_fio_results") as collect, \
+                            mock.patch.object(fio, "collect_fio_results_once") as collect, \
                             mock.patch("builtins.print"):
                         func = fio.action_gather_results if action == "gather" else fio.action_run_all
                         self.assertEqual(func(args, ["ns"], config, self.ssh, mock.Mock()), 1)
